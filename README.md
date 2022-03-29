@@ -28,30 +28,6 @@ cd ..
 ./wireguard-linux-compat/kernel-tree-scripts/jury-rig.sh ql-ol-kernel
 ```
 
-There will be a wireguard folder in the `ql-ol-kernel/build/wireguard`:
-
-```console
-$ tree ql-ol-kernel/build/wireguard/
-ql-ol-kernel/build/wireguard/
-`-- lib
-    `-- modules
-        `-- 3.18.20-g46733c7-dirty
-            |-- build -> /opt/EC25-E/ql-ol-sdk/ql-ol-kernel/build
-            |-- kernel
-            |-- modules.alias
-            |-- modules.alias.bin
-            |-- modules.builtin.bin
-            |-- modules.dep
-            |-- modules.dep.bin
-            |-- modules.devname
-            |-- modules.softdep
-            |-- modules.symbols
-            |-- modules.symbols.bin
-            `-- source -> /opt/EC25-E/ql-ol-sdk/ql-ol-kernel
-
-6 directories, 9 files
-```
-
 3) Build kernel modules
 
 Let's run `make kernel_menuconfig` and select `IP: WireGuard secure network tunnel` option, then all its dependencies are selected:
@@ -101,6 +77,20 @@ root@mdm9607-perf:~# dmesg | grep wireguard
 [    0.754816] wireguard: Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
 ```
 
+If the debug is enabled, we can see all tests are passed:
+```
+root@mdm9607-perf:/usrdata# dmesg | grep wireguard
+[    0.781861] wireguard: chacha20 self-tests: pass
+[    0.808922] wireguard: poly1305 self-tests: pass
+[    0.810708] wireguard: chacha20poly1305 self-tests: pass
+[    0.813388] wireguard: blake2s self-tests: pass
+[    1.014296] wireguard: curve25519 self-tests: pass
+[    1.014528] wireguard: allowedips self-tests: pass
+[    1.022474] wireguard: nonce counter self-tests: pass
+[    1.291262] wireguard: ratelimiter self-tests: pass
+[    1.291547] wireguard: WireGuard 1.0.20211208 loaded. See www.wireguard.com for information.
+[    1.291558] wireguard: Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
+```
 ### Compile and install the wg(8) tool
 
 In the same terminal environment with previous session, doing below steps to compile `wireguard-tools`
@@ -153,7 +143,87 @@ This can be done easily using [`wg-easy`](https://github.com/WeeJeWel/wg-easy) d
 
 ![Wireguard UI](https://raw.githubusercontent.com/WeeJeWel/wg-easy/master/assets/screenshot.png)
 
-### Setup Wireguard config at QuecOpen target
+### Setup client side
 
-Following steps can be done to setup Wireguard follows the generated Wireguard config from above step, with example:
+From the server side, let's say generated config as below:
+```
+[Interface]
+Address = 192.168.100.3/32
+PrivateKey = cBoch+dZhWWUfiKzolfruUGdj+mxTY/EqVHJQACb/EU=
 
+[Peer]
+PublicKey = GPdmUWIOWy+e5KeQ8h6+T7ivGBzDj+A8I/U67dIQ6go=
+PresharedKey = p+ssLtghcZziJ/PwxiBWVb2oBFsA/aXslRG0Wd5iQT0=
+AllowedIPs = 0.0.0.0/0
+Endpoint = vpn.bacnh.com:51820
+PersistentKeepalive = 15
+```
+
+Due to the current QuecOpen is not using `bash` so we can't use the `wg-quick` directly to load the config, however those configs can be manually created:
+- Wireguard interface with IP: 192.168.100.3/32 and private key: `cBoch+dZhWWUfiKzolfruUGdj+mxTY/EqVHJQACb/EU=`
+- Add a peer with endpoint: `vpn.bacnh.com:51820` which is the Public IP of the server, and with the publickey `GPdmUWIOWy+e5KeQ8h6+T7ivGBzDj+A8I/U67dIQ6go=` and PreshareKey `p+ssLtghcZziJ/PwxiBWVb2oBFsA/aXslRG0Wd5iQT0=` as higher security level. And also add PersistentKeepalive every 15sec to ensure the connection remains open.
+
+Let's store the private key and share key into files:
+```
+echo cBoch+dZhWWUfiKzolfruUGdj+mxTY/EqVHJQACb/EU= > privatekey
+echo p+ssLtghcZziJ/PwxiBWVb2oBFsA/aXslRG0Wd5iQT0= > sharekey
+```
+
+We can setup `wireguard` instance:
+```console
+## Create interface
+ip link add type wireguard
+## Add IP
+ip addr add 192.168.100.3/32 dev wireguard0
+
+## Setup private key for the client
+wg set wireguard0 listen-port 51871 private-key privatekey
+
+## Add a the server as a peer to this module
+wg set wireguard0 peer GPdmUWIOWy+e5KeQ8h6+T7ivGBzDj+A8I/U67dIQ6go= preshared-key sharekey endpoint vpn.bacnh.com:51820 allowed-ips 0.0.0.0/0
+
+## Ensure the connection remains open
+wg set wireguard0 peer GPdmUWIOWy+e5KeQ8h6+T7ivGBzDj+A8I/U6
+7dIQ6go= persistent-keepalive 15
+
+## Add the routing table to access the peer
+ip route add 192.168.100.0/24 dev wireguard0
+
+## The bring up the interface
+ip link set wireguard0 up
+```
+
+There will be a interface `wireguard0` with IP `192.168.100.3`:
+
+```
+root@mdm9607-perf:/usrdata# ifconfig wireguard0
+wireguard0 Link encap:UNSPEC  HWaddr 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00
+          inet addr:192.168.100.3  P-t-P:192.168.100.3  Mask:255.255.255.255
+          UP POINTOPOINT RUNNING NOARP  MTU:1420  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+```
+
+Then, we can see the client is connected to the server via `wg` tool:
+
+```
+root@mdm9607-perf:/usrdata# wg show
+interface: wireguard0
+  public key: XfVGbAM2igd/PVYEK9nc/27CLfrfNyMXyPgFahr3UTg=
+  private key: (hidden)
+  listening port: 51871
+
+peer: GPdmUWIOWy+e5KeQ8h6+T7ivGBzDj+A8I/U67dIQ6go=
+  preshared key: (hidden)
+  endpoint: 113.190.95.242:51820
+  allowed ips: 0.0.0.0/0
+  latest handshake: 1 minute, 16 seconds ago
+  transfer: 7.18 KiB received, 7.85 KiB sent
+  persistent keepalive: every 15 seconds
+  ```
+
+As `wireguard` is working in QuecOpen, further tweak needs to be done to fit customer's usage.
+
+PS: This `wireguard` config is used for demoistration purpose only and it may not work at your side.
